@@ -814,6 +814,497 @@
       renderMatchesFeed();
       checkAuth();
     };
-  </script>
+  </scri/* APPLICATION STATE & MULTI-SPORT DATA MODEL ENGINE */
+    const API_KEY = "03758c5391514695b126ccd7e7343b2b";
+
+    const state = {
+      theme: localStorage.getItem('matchpulse_theme') || 'dark',
+      activeSport: 'all',
+      activeStatus: 'all',
+      searchQuery: '',
+      favoritesOnly: false,
+      simEnabled: true,
+      selectedMatchId: null,
+      activeModalTab: 'stats',
+      user: { name: '', isLoggedIn: false, xp: 120, favorites: [1, 3] }
+    };
+
+    // Dinamik Maç Verisi Dizisi
+    let matchesData = [];
+
+    function renderJerseySVG(c1, c2, pattern = 'stripes', number = '10', sport = 'football', width = 48, height = 48) {
+      let bodySvg = '';
+      if (sport === 'f1') {
+        bodySvg = `
+          <path d="M14 6 L34 6 L38 16 L40 44 L8 44 L10 16 Z" fill="${c1}" stroke="${c2}" stroke-width="1.5"/>
+          <path d="M8 20 L40 20" stroke="${c2}" stroke-width="3"/>
+          <circle cx="24" cy="32" r="8" fill="${c2}"/>
+          <text x="24" y="36" font-size="10" font-weight="900" fill="${c1}" text-anchor="middle">${number}</text>
+        `;
+      } else if (sport === 'basketball') {
+        bodySvg = `
+          <path d="M12 8 C12 5, 16 4, 24 4 C32 4, 36 5, 36 8 L38 18 C38 20, 35 22, 35 44 L13 44 C13 22, 10 20, 10 18 Z" fill="${c1}" stroke="${c2}" stroke-width="1.5"/>
+          <text x="24" y="32" font-size="12" font-weight="900" fill="${c2}" text-anchor="middle">${number}</text>
+        `;
+      } else {
+        bodySvg = `
+          <path d="M6 16 L13 10 L16 22 L10 25 Z" fill="${c2}"/>
+          <path d="M42 16 L35 10 L32 22 L38 25 Z" fill="${c2}"/>
+          <path d="M12 11 C16 8, 32 8, 36 11 L37 44 L11 44 Z" fill="${c1}" stroke="${c2}" stroke-width="1"/>
+          <text x="24" y="33" font-size="12" font-weight="900" fill="${c2}" text-anchor="middle">${number}</text>
+        `;
+      }
+
+      return `<svg width="${width}" height="${height}" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">${bodySvg}</svg>`;
+    }
+
+    /* CANLI API ENTEGRASYONU */
+    async function fetchLiveMatchesFromAPI() {
+      // 1. Football-Data.org API İsteği
+      const urlFootballData = "https://api.football-data.org/v4/matches";
+      
+      try {
+        const response = await fetch(urlFootballData, {
+          method: 'GET',
+          headers: {
+            'X-Auth-Token': API_KEY
+          }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          parseFootballDataMatches(data.matches || []);
+          return;
+        }
+      } catch (err) {
+        console.warn("Football-data.org doğrudan istemci çağrısı CORS engeline takıldı, yedek API deneniyor...", err);
+      }
+
+      // 2. API-Sports / RapidAPI İsteği (Yedek Servis Yapısı)
+      try {
+        const response = await fetch("https://v3.football.api-sports.io/fixtures?live=all", {
+          method: "GET",
+          headers: {
+            "x-apisports-key": API_KEY,
+            "x-rapidapi-key": API_KEY
+          }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          parseApiSportsMatches(data.response || []);
+          return;
+        }
+      } catch (err) {
+        console.warn("API-Sports bağlantısı kurulamadı.", err);
+      }
+
+      // Bağlantı kurulamazsa demo verileri yükle
+      loadFallbackDemoData();
+    }
+
+    /* API VERİLERİNİ MATCHPULSE FORMATINA DÖNÜŞTÜRME */
+    function parseFootballDataMatches(matches) {
+      if (!matches.length) {
+        loadFallbackDemoData();
+        return;
+      }
+
+      matchesData = matches.map(m => {
+        const isLive = ['IN_PLAY', 'PAUSED', 'HALF_TIME'].includes(m.status);
+        const isFinished = m.status === 'FINISHED';
+        const statusType = isLive ? 'live' : (isFinished ? 'finished' : 'upcoming');
+
+        return {
+          id: m.id,
+          sport: 'football',
+          league: m.competition ? m.competition.name : 'Futbol Ligi',
+          status: statusType,
+          time: isLive ? (m.minute ? m.minute + "'" : 'CANLI') : (isFinished ? 'MS' : 'Başlamadı'),
+          team1: { name: m.homeTeam.shortName || m.homeTeam.name, color1: '#1e40af', color2: '#ffffff', number: '10' },
+          team2: { name: m.awayTeam.shortName || m.awayTeam.name, color1: '#dc2626', color2: '#ffffff', number: '9' },
+          score1: m.score?.fullTime?.home ?? m.score?.halfTime?.home ?? 0,
+          score2: m.score?.fullTime?.away ?? m.score?.halfTime?.away ?? 0,
+          xG1: 1.25,
+          xG2: 0.95,
+          story: `${m.competition?.name || 'Lig'} karşılaşmasında canlı istatistik akışı devam ediyor.`,
+          timeline: [
+            { minute: m.minute ? m.minute + "'" : 'Gelişme', type: 'info', text: `Karşılaşma durumu: ${m.status}` }
+          ],
+          stats: { possession: [50, 50], shotsOnTarget: [4, 3], totalShots: [10, 8], bigChances: [1, 1], dangerousAttacks: [35, 30], corners: [4, 2] },
+          form1: ['W', 'D', 'W', 'W', 'L'],
+          form2: ['L', 'W', 'D', 'L', 'W'],
+          prediction: { text: "Canlı API verilerine göre ev sahibi takım hücum verilerinde üstün durumda." },
+          h2h: [{ date: '2026-02-10', result: `${m.homeTeam.name} - ${m.awayTeam.name}` }],
+          comments: []
+        };
+      });
+
+      updateLiveBadgeCount();
+      renderMatchesFeed();
+    }
+
+    function parseApiSportsMatches(items) {
+      if (!items.length) {
+        loadFallbackDemoData();
+        return;
+      }
+
+      matchesData = items.map(item => ({
+        id: item.fixture.id,
+        sport: 'football',
+        league: item.league.name,
+        status: item.fixture.status.short === 'FT' ? 'finished' : 'live',
+        time: item.fixture.status.elapsed ? item.fixture.status.elapsed + "'" : 'CANLI',
+        team1: { name: item.teams.home.name, color1: '#2563eb', color2: '#ffffff', number: '10' },
+        team2: { name: item.teams.away.name, color1: '#b91c1c', color2: '#ffffff', number: '9' },
+        score1: item.goals.home ?? 0,
+        score2: item.goals.away ?? 0,
+        xG1: 1.45,
+        xG2: 1.10,
+        story: `${item.league.name} canlı karşılaşması akışı.`,
+        timeline: [],
+        stats: { possession: [52, 48], shotsOnTarget: [5, 4], totalShots: [11, 9], dangerousAttacks: [40, 32], corners: [5, 3] },
+        form1: ['W', 'W', 'D', 'L'],
+        form2: ['L', 'W', 'W', 'D'],
+        prediction: { text: "Anlık istatistikler eşit ağırlıklı bir maç seyri göstermektedir." },
+        h2h: [],
+        comments: []
+      }));
+
+      updateLiveBadgeCount();
+      renderMatchesFeed();
+    }
+
+    function loadFallbackDemoData() {
+      matchesData = [
+        {
+          id: 1,
+          sport: 'football',
+          league: 'UEFA Champions League',
+          status: 'live',
+          time: "72'",
+          team1: { name: 'Real Madrid', color1: '#ffffff', color2: '#1d4ed8', number: '9' },
+          team2: { name: 'FC Barcelona', color1: '#004d98', color2: '#a50044', number: '10' },
+          score1: 2,
+          score2: 1,
+          xG1: 1.84,
+          xG2: 1.12,
+          story: "Real Madrid sol kanattan baskıyı artırdı ve xG üstünlüğünü ele geçirdi.",
+          timeline: [
+            { minute: "72'", type: "goal", text: "⚽ GOL! Vinicius Jr skoru 2-1 yaptı!" },
+            { minute: "32'", type: "goal", text: "⚽ GOL! Lewandowski penaltıdan eşitliği sağladı (1-1)" }
+          ],
+          stats: { possession: [54, 46], shotsOnTarget: [7, 4], totalShots: [14, 9], bigChances: [3, 1], dangerousAttacks: [58, 42], corners: [6, 3] },
+          form1: ['W', 'W', 'D', 'W', 'L'],
+          form2: ['W', 'L', 'W', 'W', 'W'],
+          prediction: { text: "Yapay zeka analizine göre ev sahibinin galibiyet şansı %54." },
+          h2h: [{ date: '2026-04-21', result: 'Real Madrid 3 - 2 FC Barcelona' }],
+          comments: [{ user: "Marco_R", text: "Vinicius harika oynuyor!", time: "2m ago" }]
+        },
+        {
+          id: 2,
+          sport: 'f1',
+          league: 'Formula 1 Monako GP',
+          status: 'live',
+          time: "Tur 48/78",
+          team1: { name: 'M. Verstappen', color1: '#1e1b4b', color2: '#ef4444', number: '1' },
+          team2: { name: 'C. Leclerc', color1: '#dc2626', color2: '#facc15', number: '16' },
+          scoreDisplay: "Fark: +1.245s",
+          f1Details: { leader: "M. Verstappen", gap: "+1.245s", fastestLap: "1:14.281", tyre1: "Medium", tyre2: "Hard", pitStops1: 1, pitStops2: 1 },
+          story: "Verstappen liderliğini koruyor.",
+          timeline: [{ minute: "Tur 45", type: "pit", text: "🔧 Red Bull Pit Stop: Verstappen -> Hard" }],
+          form1: ['P1', 'P1', 'P2'], form2: ['P2', 'P1', 'P3'],
+          prediction: { text: "Verstappen avantajlı konumda." },
+          h2h: [], comments: []
+        }
+      ];
+      updateLiveBadgeCount();
+      renderMatchesFeed();
+    }
+
+    function updateLiveBadgeCount() {
+      const liveCount = matchesData.filter(m => m.status === 'live').length;
+      const badge = document.getElementById('live-count-badge');
+      if (badge) badge.textContent = liveCount;
+    }
+
+    /* ARAYÜZ YÖNETİMİ */
+    function renderMatchesFeed() {
+      const container = document.getElementById('matches-container');
+      const filtered = matchesData.filter(m => {
+        if (state.activeSport !== 'all' && m.sport !== state.activeSport) return false;
+        if (state.activeStatus !== 'all' && m.status !== state.activeStatus) return false;
+        if (state.favoritesOnly && !state.user.favorites.includes(m.id)) return false;
+        if (state.searchQuery && !m.team1.name.toLowerCase().includes(state.searchQuery.toLowerCase()) && !m.team2.name.toLowerCase().includes(state.searchQuery.toLowerCase()) && !m.league.toLowerCase().includes(state.searchQuery.toLowerCase())) return false;
+        return true;
+      });
+
+      if (filtered.length === 0) {
+        container.innerHTML = `<div class="p-8 text-center bg-theme-surface rounded-2xl border border-theme text-theme-muted">Şu an gösterilecek maç bulunamadı.</div>`;
+        return;
+      }
+
+      container.innerHTML = filtered.map(m => {
+        const j1 = renderJerseySVG(m.team1.color1, m.team1.color2, 'stripes', m.team1.number, m.sport, 36, 36);
+        const j2 = renderJerseySVG(m.team2.color1, m.team2.color2, 'stripes', m.team2.number, m.sport, 36, 36);
+
+        let scoreText = m.sport === 'f1' 
+          ? `<span class="text-xs font-bold text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-xl border border-amber-500/20">${m.scoreDisplay}</span>`
+          : `<span id="card-score-${m.id}" class="font-black text-sm text-theme-main bg-theme-main px-2.5 py-1 rounded-xl border border-theme">${m.score1} - ${m.score2}</span>`;
+
+        return `
+          <div onclick="openMatchModal(${m.id})" class="bg-theme-surface hover:border-blue-500/50 rounded-2xl p-4 border border-theme shadow-sm cursor-pointer transition">
+            <div class="flex items-center justify-between pb-2 mb-3 border-b border-theme/60 text-xs">
+              <span class="font-bold text-theme-muted">${m.league}</span>
+              <span class="${m.status === 'live' ? 'bg-red-500/20 text-red-500' : 'bg-blue-500/20 text-blue-400'} px-2 py-0.5 rounded-full font-bold text-[10px] flex items-center gap-1">
+                ${m.status === 'live' ? '<span class="w-1.5 h-1.5 rounded-full bg-red-500 pulse-dot"></span>' : ''} ${m.time}
+              </span>
+            </div>
+            <div class="grid grid-cols-12 items-center gap-2">
+              <div class="col-span-5 flex items-center gap-2">${j1} <span class="font-bold text-xs text-theme-main truncate">${m.team1.name}</span></div>
+              <div class="col-span-2 text-center">${scoreText}</div>
+              <div class="col-span-5 flex items-center justify-end gap-2"><span class="font-bold text-xs text-theme-main truncate text-right">${m.team2.name}</span> ${j2}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function handleSearch() {
+      const input = document.getElementById('search-input');
+      state.searchQuery = input ? input.value.trim() : '';
+      renderMatchesFeed();
+    }
+
+    function toggleSim() {
+      state.simEnabled = !state.simEnabled;
+      const btnText = document.getElementById('sim-btn-text');
+      const dot = document.getElementById('sim-dot');
+      if (state.simEnabled) {
+        btnText.textContent = "SİM: AÇIK";
+        dot.className = "w-2 h-2 rounded-full bg-green-500 pulse-dot";
+        showToast("Canlı veri yenileme aktif.", "success");
+      } else {
+        btnText.textContent = "SİM: KAPALI";
+        dot.className = "w-2 h-2 rounded-full bg-gray-500";
+        showToast("Canlı veri yenileme durduruldu.", "info");
+      }
+    }
+
+    /* MODAL SİSTEMİ */
+    function openMatchModal(id) {
+      state.selectedMatchId = id;
+      const m = matchesData.find(x => x.id === id);
+      if (!m) return;
+
+      document.getElementById('modal-league-title').textContent = m.league;
+      document.getElementById('modal-team1-name').textContent = m.team1.name;
+      document.getElementById('modal-team2-name').textContent = m.team2.name;
+      document.getElementById('modal-team1-jersey').innerHTML = renderJerseySVG(m.team1.color1, m.team1.color2, 'stripes', m.team1.number, m.sport, 50, 50);
+      document.getElementById('modal-team2-jersey').innerHTML = renderJerseySVG(m.team2.color1, m.team2.color2, 'stripes', m.team2.number, m.sport, 50, 50);
+
+      document.getElementById('modal-score').textContent = m.sport === 'f1' ? m.scoreDisplay : `${m.score1} - ${m.score2}`;
+      switchModalTab('stats');
+
+      const modal = document.getElementById('match-modal');
+      modal.classList.remove('hidden');
+      setTimeout(() => modal.classList.remove('opacity-0'), 10);
+    }
+
+    function closeMatchModal() {
+      const modal = document.getElementById('match-modal');
+      modal.classList.add('opacity-0');
+      setTimeout(() => modal.classList.add('hidden'), 300);
+    }
+
+    function switchModalTab(tabKey) {
+      state.activeModalTab = tabKey;
+      const m = matchesData.find(x => x.id === state.selectedMatchId);
+      const content = document.getElementById('modal-tab-content');
+      if (!m || !content) return;
+
+      if (tabKey === 'stats') {
+        content.innerHTML = `
+          <div class="space-y-4">
+            <div class="bg-blue-500/10 border border-blue-500/30 p-3 rounded-xl text-xs text-blue-200">
+              <span class="font-bold">💡 Analiz Özet:</span> ${m.story}
+            </div>
+            <div class="space-y-3">
+              ${renderStatBar("Beklenen Gol (xG)", m.xG1, m.xG2)}
+              ${renderStatBar("Topla Oynama (%)", m.stats.possession[0], m.stats.possession[1])}
+              ${renderStatBar("İsabetli Şut", m.stats.shotsOnTarget[0], m.stats.shotsOnTarget[1])}
+              ${renderStatBar("Tehlikeli Atak", m.stats.dangerousAttacks[0], m.stats.dangerousAttacks[1])}
+              ${renderStatBar("Köşe Vuruşu", m.stats.corners[0], m.stats.corners[1])}
+            </div>
+          </div>
+        `;
+      } else if (tabKey === 'timeline') {
+        content.innerHTML = `
+          <div class="space-y-2">
+            <h4 class="font-bold text-xs text-theme-dim uppercase mb-3">Canlı Dakika Dakika Olaylar</h4>
+            ${m.timeline.length ? m.timeline.map(t => `
+              <div class="bg-theme-surface p-3 rounded-xl border border-theme flex items-center gap-3 text-xs">
+                <span class="font-black text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded">${t.minute}</span>
+                <span class="font-medium text-theme-main">${t.text}</span>
+              </div>
+            `).join('') : '<div class="text-xs text-theme-muted">Henüz canlı olay verisi yok.</div>'}
+          </div>
+        `;
+      } else if (tabKey === 'form') {
+        content.innerHTML = `
+          <div class="space-y-4">
+            <div class="p-3 bg-purple-500/10 border border-purple-500/30 rounded-xl text-xs text-purple-200">
+              <span class="font-bold block mb-1">🤖 AI Tahmini:</span> ${m.prediction.text}
+            </div>
+          </div>
+        `;
+      } else if (tabKey === 'h2h') {
+        content.innerHTML = `
+          <div class="space-y-2 text-xs">
+            ${m.h2h.map(h => `<div class="p-3 bg-theme-surface border border-theme rounded-xl flex justify-between"><span class="font-bold text-theme-main">${h.result}</span><span class="text-theme-dim">${h.date}</span></div>`).join('')}
+          </div>
+        `;
+      } else if (tabKey === 'comments') {
+        content.innerHTML = `
+          <div class="space-y-3">
+            <div class="flex gap-2">
+              <input type="text" id="comment-input" placeholder="Yorum yapın..." class="flex-1 bg-theme-surface border border-theme rounded-xl p-2.5 text-xs text-theme-main focus:outline-none">
+              <button onclick="postComment()" class="bg-blue-600 text-white font-bold px-4 rounded-xl text-xs">Gönder</button>
+            </div>
+            <div class="space-y-2">
+              ${m.comments.map(c => `<div class="p-2.5 bg-theme-surface border border-theme rounded-xl text-xs"><span class="font-bold text-amber-400 block">${c.user}</span><p class="text-theme-muted">${c.text}</p></div>`).join('')}
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    function renderStatBar(label, v1, v2) {
+      const tot = (v1 + v2) || 1;
+      const p1 = Math.round((v1 / tot) * 100);
+      const p2 = Math.round((v2 / tot) * 100);
+      return `
+        <div>
+          <div class="flex justify-between text-xs font-bold mb-1">
+            <span class="text-blue-500">${v1}</span>
+            <span class="text-theme-main">${label}</span>
+            <span class="text-red-400">${v2}</span>
+          </div>
+          <div class="w-full bg-theme-surface h-2 rounded-full overflow-hidden flex border border-theme">
+            <div class="bg-blue-600 h-full" style="width: ${p1}%"></div>
+            <div class="bg-red-500 h-full" style="width: ${p2}%"></div>
+          </div>
+        </div>
+      `;
+    }
+
+    function postComment() {
+      const input = document.getElementById('comment-input');
+      if (!input || !input.value.trim()) return;
+      const m = matchesData.find(x => x.id === state.selectedMatchId);
+      if (m) {
+        m.comments.unshift({ user: state.user.isLoggedIn ? state.user.name : "Kullanıcı", text: input.value.trim() });
+        switchModalTab('comments');
+        showToast('Yorum gönderildi!', 'success');
+      }
+    }
+
+    /* AUTH & NOTIFICATION UTILS */
+    function checkAuth() {
+      const stored = localStorage.getItem('matchpulse_auth_user');
+      if (stored) {
+        try {
+          const u = JSON.parse(stored);
+          state.user.name = u.fullname;
+          state.user.isLoggedIn = true;
+          document.getElementById('auth-header-btn-text').textContent = u.fullname.split(' ')[0];
+        } catch(e){}
+      }
+    }
+
+    function openAuthModal() {
+      const modal = document.getElementById('auth-modal');
+      if (state.user.isLoggedIn) {
+        document.getElementById('auth-form').classList.add('hidden');
+        document.getElementById('auth-logged-in-view').classList.remove('hidden');
+        document.getElementById('auth-user-name-display').textContent = state.user.name;
+      }
+      modal.classList.remove('hidden');
+      setTimeout(() => modal.classList.remove('opacity-0'), 10);
+    }
+
+    function closeAuthModal() {
+      const modal = document.getElementById('auth-modal');
+      modal.classList.add('opacity-0');
+      setTimeout(() => modal.classList.add('hidden'), 300);
+    }
+
+    function handleAuthSubmit(e) {
+      e.preventDefault();
+      const name = document.getElementById('auth-fullname').value.trim();
+      localStorage.setItem('matchpulse_auth_user', JSON.stringify({ fullname: name }));
+      state.user.name = name;
+      state.user.isLoggedIn = true;
+      document.getElementById('auth-header-btn-text').textContent = name.split(' ')[0];
+      closeAuthModal();
+      showToast(`Giriş yapıldı: ${name}`, 'success');
+    }
+
+    function handleLogout() {
+      localStorage.removeItem('matchpulse_auth_user');
+      state.user.isLoggedIn = false;
+      document.getElementById('auth-header-btn-text').textContent = 'Üye Ol / Giriş';
+      closeAuthModal();
+      showToast('Çıkış yapıldı', 'info');
+    }
+
+    function openNotifSettingsModal() {
+      const m = document.getElementById('notif-modal');
+      m.classList.remove('hidden');
+      setTimeout(() => m.classList.remove('opacity-0'), 10);
+    }
+
+    function closeNotifSettingsModal() {
+      const m = document.getElementById('notif-modal');
+      m.classList.add('opacity-0');
+      setTimeout(() => m.classList.add('hidden'), 300);
+    }
+
+    function saveNotifSettings() {
+      closeNotifSettingsModal();
+      showToast('Bildirim tercihleri güncellendi!', 'success');
+    }
+
+    /* FILTERS & THEME */
+    function renderSportsTabs() {
+      const list = [
+        { id: 'all', icon: '⚡', name: 'Tüm Sporlar' },
+        { id: 'football', icon: '⚽', name: 'Futbol' },
+        { id: 'f1', icon: '🏎️', name: 'Formula 1' },
+        { id: 'basketball', icon: '🏀', name: 'Basketbol' }
+      ];
+
+      document.getElementById('sports-tabs-container').innerHTML = list.map(item => {
+        const active = state.activeSport === item.id ? 'bg-blue-600 text-white' : 'bg-theme-main text-theme-muted border border-theme';
+        return `
+          <button onclick="setSportFilter('${item.id}')" class="px-3.5 py-1.5 rounded-xl font-bold text-xs flex items-center gap-2 transition whitespace-nowrap ${active}">
+            <span>${item.icon}</span><span>${item.name}</span>
+          </button>
+        `;
+      }).join('');
+    }
+
+    function setSportFilter(id) {
+      state.activeSport = id;
+      renderSportsTabs();
+      renderMatchesFeed();
+    }
+
+    function setStatusFilter(status) {
+      state.activeStatus = status;
+      document.querySelectorAll('.status-btn').forEach(btn => {
+        if (btn.getAttribute('data-status') === status) {
+          btn.className = "status-btn active px-3 py-1.5 rounded-lg font-semibold text-xs transition bg-bluept>
 </body>
 </html>
